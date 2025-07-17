@@ -55,6 +55,14 @@ class Samples {
         void GetCapability();
         void NV();
         void NVX();
+
+        int CreateCounter(int iIndex,std::string strPassword);
+        int DeleteCounter(int iIndex,std::string strPassword);
+        int64_t ReadCounter(int iIndex,std::string strPassword);
+        int IncreaseCounter(int iIndex,std::string strPassword);
+        bool CounterExist(int iIndex);
+        ByteVec AuthFromString(std::string strPassword);
+
         void PrimaryKeys();
         void AuthSessions();
         void Async();

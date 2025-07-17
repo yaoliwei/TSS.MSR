@@ -6,6 +6,12 @@
 #include "stdafx.h"
 #include "Samples.h"
 #include "TpmConfig.h"
+#include <cstddef> 
+
+#include <string>
+#include <vector>
+#include <cstddef>    // for std::byte
+#include <algorithm>  // for std::transform
 
 using namespace std;
 
@@ -43,10 +49,10 @@ Samples::Samples()
     // If the simulator was not shut down cleanly ("disorderly shutdown") or a TPM app
     // crashed midway or has bugs the TPM may go into lockout or have objects abandoned
     // in its (limited) internal memory. Try to clean up and recover the TPM.
-    RecoverTpm();
+    //RecoverTpm();
 
     // Install callbacks to collect command execution statistics.
-    StartCallbacks();
+    //StartCallbacks();
 
     TpmConfig::Init(tpm);
 } // Samples::Samples()
@@ -61,7 +67,7 @@ Samples::~Samples()
     }
 
     // The following routine finalizes and prints the function stats.
-    FinishCallbacks();
+    //FinishCallbacks();
 
     delete device;
 }
@@ -713,12 +719,12 @@ void Samples::NVX()
     }
     Announce("NVX");
 
-    ByteVec nvAuth { 1, 5, 1, 1 };
+    ByteVec nvAuth{ 1, 5, 1, 1 };
     TPM_HANDLE nvHandle = RandomNvHandle();
 
     // Try to delete the slot if it exists
     tpm._AllowErrors()
-       .NV_UndefineSpace(TPM_RH::OWNER, nvHandle);
+        .NV_UndefineSpace(TPM_RH::OWNER, nvHandle);
 
     // The index (in the platform hierarchy) may exist as the result of this test failure
     bool exists = !tpm._LastCommandSucceeded() && tpm._GetLastResponseCode() != TPM_RC::HANDLE;
@@ -733,11 +739,11 @@ void Samples::NVX()
     else
     {
         TPMS_NV_PUBLIC nvTemplate5(nvHandle,                // Index handle
-                                   TPM_ALG_ID::SHA1,        // Name alg
-                                   TPMA_NV::AUTHREAD | TPMA_NV::AUTHWRITE | TPMA_NV::EXTEND
-                                    | TPMA_NV::POLICY_DELETE | TPMA_NV::PLATFORMCREATE,
-                                   policyHash,
-                                   20);                     // Size in bytes
+            TPM_ALG_ID::SHA1,        // Name alg
+            TPMA_NV::AUTHREAD | TPMA_NV::AUTHWRITE | TPMA_NV::EXTEND
+            | TPMA_NV::POLICY_DELETE | TPMA_NV::PLATFORMCREATE,
+            policyHash,
+            20);                     // Size in bytes
 
         tpm.NV_DefineSpace(TPM_RH::PLATFORM, nvAuth, nvTemplate5);
         cout << "Created NV slot under Platform hierarchy" << endl;
@@ -754,20 +760,167 @@ void Samples::NVX()
 
     tpm._GetDevice().AssertPhysicalPresence(true);
     tpm._Sessions(s/*, pwapSession*/)._ExpectError(TPM_RC::POLICY_FAIL)
-       .NV_UndefineSpaceSpecial(nvHandle, TPM_RH::PLATFORM);
+        .NV_UndefineSpaceSpecial(nvHandle, TPM_RH::PLATFORM);
     cout << "Failed to delete the Platform NV slot without the proper policy" << endl;
 
     p.Execute(tpm, s);
 
     // Empty PW session will be automatically added by the TSS.CPP
     tpm._Sessions(s/*, pwapSession*/)
-       .NV_UndefineSpaceSpecial(nvHandle, TPM_RH::PLATFORM);
+        .NV_UndefineSpaceSpecial(nvHandle, TPM_RH::PLATFORM);
     cout << "Deleted the Platform NV slot." << endl;
 
     tpm._GetDevice().AssertPhysicalPresence(false);
     tpm.FlushContext(s);
     cout << "---- NVX successfully finished ----" << endl;
 } // NVX()
+
+ByteVec Samples::AuthFromString(std::string strPassword) {
+    ByteVec nvAuth(strPassword.begin(), strPassword.end());
+    //nvAuth.reserve(strPassword.size());
+    //std::transform(strPassword.begin(), strPassword.end(), std::back_inserter(nvAuth),
+    //   [](char c) { return std::byte(c); });
+
+    //std::transform(strPassword.begin(), strPassword.end(), std::back_inserter(nvAuth),
+    //    [](char c) { return c; });
+
+    return nvAuth;
+}
+
+bool Samples::CounterExist(int iIndex) {        
+    TPM_HANDLE nvHandle(iIndex);    
+   
+    NV_ReadPublicResponse nvPublicInfo;
+    try {
+        nvPublicInfo = tpm.NV_ReadPublic(nvHandle);
+    }        
+    catch (exception) {
+        std::cout << "counter " << iIndex << " unable to read public info, seems inexistent" << std::endl;
+        return false;
+    }
+
+    return (nvPublicInfo.nvPublic.attributes & TPMA_NV::COUNTER) != 0;
+}
+
+//return values: -1:existed 0:fail 1:success
+int Samples::CreateCounter(int iIndex,std::string strPassword) {
+    int iRet = -2;
+
+    if (CounterExist(iIndex)) {
+        std::cout << "counter " << iIndex << " has already been there, unable to create again" << std::endl;        
+        iRet = -1;
+    }
+    else {
+        std::cout << "counter " << iIndex << " inexisted, thus going to create it" << std::endl;
+
+        ByteVec nvAuth = AuthFromString(strPassword);
+        TPM_HANDLE nvHandle(iIndex);
+
+        TPMS_NV_PUBLIC nvTemplate2(nvHandle,            // Index handle
+            TPM_ALG_ID::SHA256,  // Name-alg
+            TPMA_NV::AUTHREAD | // Attributes
+            TPMA_NV::AUTHWRITE |
+            TPMA_NV::COUNTER,
+            null,             // Policy
+            8);               // Size in bytes
+
+        try {
+            tpm.NV_DefineSpace(TPM_RH::OWNER, nvAuth, nvTemplate2);
+            // We have set the authVal to be nvAuth, so set it in the handle too.
+            nvHandle.SetAuth(nvAuth);            
+            iRet = 1;
+            std::cout << "counter " << iIndex << " has been created successfully" << std::endl;
+        }
+        catch (exception) {
+            std::cout << "counter " << iIndex << " got failed to create" << std::endl;           
+            iRet = 0;
+        }
+    }
+
+    return iRet;
+}
+int Samples::DeleteCounter(int iIndex,std::string strPassword) {
+    int iRet = -2;
+
+    if (CounterExist(iIndex)) {        
+        ByteVec nvAuth = AuthFromString(strPassword);
+        TPM_HANDLE nvHandle(iIndex);
+        nvHandle.SetAuth(nvAuth);
+        try {
+            // And then delete it
+            tpm.NV_UndefineSpace(TPM_RH::OWNER, nvHandle);
+            iRet = 1;
+            std::cout << "counter " << iIndex << " has been deleted successfully" << std::endl;
+        }
+        catch (exception) {
+            iRet = 0;
+            std::cout << "counter " << iIndex << " got failed to delete" << std::endl;
+        }
+    }
+    else {
+        iRet = -1;
+        std::cout << "counter " << iIndex << " not existed, unable to delete" << std::endl;
+    }
+
+    return iRet;
+}
+//return values: -2:inexistent counter -1:read fail  0/1/2/3...:counter values
+int64_t Samples::ReadCounter(int iIndex,std::string strPassword) {
+    int64_t iRet = -3; 
+
+    if (CounterExist(iIndex)) {
+        TPM_HANDLE nvHandle(iIndex);       
+        ByteVec nvAuth = AuthFromString(strPassword);        
+        // We have set the authVal to be nvAuth, so set it in the handle too.
+        nvHandle.SetAuth(nvAuth);
+        try {
+            ByteVec byteVec = tpm.NV_Read(nvHandle, nvHandle, 8, 0);
+            
+            iRet = 0;
+            for (size_t i = 0; i < 8; ++i) {
+                iRet |= static_cast<uint64_t>(byteVec[i]) << (8 * (7 - i));
+            }
+
+            std::cout << "counter " << iIndex << " has been read successfully with value(ByteVec) :" << byteVec << std::endl;
+            std::cout << "counter " << iIndex << " has been read successfully with value(uint64_t hex) :" << std::hex << iRet << std::endl;
+        }
+        catch (exception) {
+            iRet = -1;
+            std::cout << "counter " << iIndex << " got failed to read" << std::endl;
+        }
+    }
+    else {
+        iRet = -2;
+        std::cout << "counter " << iIndex << " not existed, thus unable to read" << std::endl;
+    }
+
+    return iRet;
+}
+//return values: -1:inexistent counter 0:increase fail  1: increase successfully
+int Samples::IncreaseCounter(int iIndex,std::string strPassword) {
+    int iRet = -2;
+
+    if (CounterExist(iIndex)) {
+        ByteVec nvAuth = AuthFromString(strPassword);
+        TPM_HANDLE nvHandle(iIndex);
+        nvHandle.SetAuth(nvAuth);
+        try {
+            tpm.NV_Increment(nvHandle, nvHandle);
+            iRet = 1;
+            std::cout << "counter " << iIndex << " has been increased successfully" << std::endl;
+        }
+        catch (exception) {
+            iRet = 0;
+            std::cout << "counter " << iIndex << " got failed to increase" << std::endl;
+        }
+    }
+    else {
+        iRet = -1;
+        std::cout << "counter " << iIndex << " not existed, thus unable to increase" << std::endl;
+    }
+
+    return iRet;
+}
 
 void Samples::NV()
 {
